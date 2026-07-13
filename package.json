@@ -1,0 +1,20 @@
+{
+  "name": "autofetch-transactions",
+  "version": "1.0.0",
+  "description": "",
+  "scripts": {
+    "start": "func start",
+    "test": "echo \"No tests yet...\""
+  },
+  "dependencies": {
+    "@azure/communication-email": "^1.1.0",
+    "@azure/data-tables": "^13.3.2",
+    "@azure/functions": "^4.0.0",
+    "@azure/identity": "^4.13.1",
+    "@azure/keyvault-secrets": "^4.11.2",
+    "@azure/storage-blob": "^12.32.0",
+    "node-fetch": "^2.7.0",
+    "plaid": "^43.0.0"
+  },
+  "main": "src/{index.js,functions/*.js}"
+}

@@ -1,0 +1,50 @@
+# .github/workflows/build-release.yml
+#
+# Runs automatically every time you push to "main". Builds the Function
+# App's dependencies on a Linux machine (matching your Function App's
+# Linux runtime -- this is what avoids the Windows/Linux native module
+# mismatch), zips everything, and publishes it as a GitHub Release at a
+# STABLE, predictable URL your ARM template can point at.
+#
+# After this runs once, the zip lives at:
+#   https://github.com/<your-org>/<your-repo>/releases/latest/download/function-app.zip
+# That URL never changes -- pushing new code just updates what's behind
+# it, which is exactly what WEBSITE_RUN_FROM_PACKAGE needs.
+
+name: Build and Release Function Package
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest   # Linux, matching the Function App's runtime
+
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies (this is what bakes node_modules
+          into the package, since WEBSITE_RUN_FROM_PACKAGE does not
+          run npm install itself)
+        run: npm install --omit=dev
+
+      - name: Zip everything up
+        run: zip -r function-app.zip . -x "*.git*"
+
+      - name: Publish as a stable Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          files: function-app.zip
+          # Overwrites the "latest" release each time, so the download
+          # URL never changes across versions.
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
