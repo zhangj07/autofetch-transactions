@@ -17,6 +17,13 @@ on:
   push:
     branches: [master]
 
+# Without this, GitHub's default automatic token is read-only for many
+# repos, and the "create a release" step fails with "Resource not
+# accessible by integration" -- this line grants exactly the write
+# access needed for that one step, nothing more.
+permissions:
+  contents: write
+
 jobs:
   build-and-release:
     runs-on: ubuntu-latest   # Linux, matching the Function App's runtime
