@@ -24,8 +24,24 @@ const { EmailClient } = require('@azure/communication-email');
 const { SecretClient } = require('@azure/keyvault-secrets');
 const { DefaultAzureCredential } = require('@azure/identity');
 
-const PLAID_CLIENT_ID = process.env.PLAID_TEST_CLIENTID;
-const PLAID_SECRET    = process.env.PLAID_TEST_SECRET;
+// Plaid Client ID/Secret are read LIVE from Key Vault (secrets
+// "plaid-test-clientid" / "plaid-test-secret"), the same secrets
+// savePlaidCredentials writes when a user saves them in BC's Plaid
+// Setup page. These are NOT environment variables.
+let _plaidClientId = null;
+let _plaidSecret = null;
+async function getPlaidCredentials() {
+    if (_plaidClientId && _plaidSecret) {
+        return { clientId: _plaidClientId, secret: _plaidSecret };
+    }
+    const secretClient = getSecretClient();
+    const clientIdSecret = await secretClient.getSecret('plaid-test-clientid');
+    const secretSecret = await secretClient.getSecret('plaid-test-secret');
+    _plaidClientId = clientIdSecret.value;
+    _plaidSecret = secretSecret.value;
+    return { clientId: _plaidClientId, secret: _plaidSecret };
+}
+
 const PLAID_BASE_URL = process.env.PLAID_ENV === 'production'
     ? 'https://production.plaid.com'
     : 'https://sandbox.plaid.com';
@@ -178,10 +194,11 @@ async function saveCursor(institutionName, cursor) {
 // Single Plaid POST helper. Both the transactions and accounts calls
 // share the same auth body, the same error handling, and the same
 // error_code tagging — so that logic lives here once.
-async function plaidPost(path, extraBody) {
+async function plaidPost(path, extraBody, context) {
+    const { clientId, secret } = await getPlaidCredentials();
     const body = {
-        client_id:    PLAID_CLIENT_ID,
-        secret:       PLAID_SECRET,
+        client_id:    clientId,
+        secret:       secret,
         ...extraBody
     };
 
@@ -202,14 +219,14 @@ async function plaidPost(path, extraBody) {
     return await response.json();
 }
 
-async function fetchTransactions(cursor, accessToken) {
+async function fetchTransactions(cursor, accessToken, context) {
     const extra = { access_token: accessToken };
     if (cursor) extra.cursor = cursor;
-    return await plaidPost('/transactions/sync', extra);
+    return await plaidPost('/transactions/sync', extra, context);
 }
 
-async function fetchAccounts(accessToken) {
-    const data = await plaidPost('/accounts/get', { access_token: accessToken });
+async function fetchAccounts(accessToken, context) {
+    const data = await plaidPost('/accounts/get', { access_token: accessToken }, context);
     return data.accounts;
 }
 
@@ -337,7 +354,7 @@ async function syncInstitution(inst, context) {
     let allTransactions = [];
     let hasMore = true;
     while (hasMore) {
-        const response = await fetchTransactions(cursor, inst.accessToken);
+        const response = await fetchTransactions(cursor, inst.accessToken, context);
         const settled  = response.added.filter(txn => txn.pending === false);
         allTransactions.push(...settled);
         cursor  = response.next_cursor;
@@ -354,7 +371,7 @@ async function syncInstitution(inst, context) {
     }
 
     // Account metadata for readable labels.
-    const accounts = await fetchAccounts(inst.accessToken);
+    const accounts = await fetchAccounts(inst.accessToken, context);
     const accountLabels = {};
     for (const account of accounts) {
         const label = buildAccountLabel(account);

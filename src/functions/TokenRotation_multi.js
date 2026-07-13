@@ -35,8 +35,22 @@ const { SecretClient } = require('@azure/keyvault-secrets');
 const { DefaultAzureCredential } = require('@azure/identity');
 const { EmailClient } = require('@azure/communication-email');
 
-const PLAID_CLIENT_ID = process.env.PLAID_TEST_CLIENTID;
-const PLAID_SECRET    = process.env.PLAID_TEST_SECRET;
+// Plaid Client ID/Secret are read LIVE from Key Vault (secrets
+// "plaid-test-clientid" / "plaid-test-secret"), matching what
+// createLinkToken/savePlaidCredentials use -- NOT environment variables.
+let _plaidClientId = null;
+let _plaidSecret = null;
+async function getPlaidCredentials() {
+    if (_plaidClientId && _plaidSecret) {
+        return { clientId: _plaidClientId, secret: _plaidSecret };
+    }
+    const secretClient = getSecretClient();
+    const clientIdSecret = await secretClient.getSecret('plaid-test-clientid');
+    const secretSecret = await secretClient.getSecret('plaid-test-secret');
+    _plaidClientId = clientIdSecret.value;
+    _plaidSecret = secretSecret.value;
+    return { clientId: _plaidClientId, secret: _plaidSecret };
+}
 const PLAID_BASE_URL = process.env.PLAID_ENV === 'production'
     ? 'https://production.plaid.com'
     : 'https://sandbox.plaid.com';
@@ -80,7 +94,8 @@ async function sendEmail(subject, message, context) {
 }
 
 async function plaidPost(path, extraBody, context) {
-    const body = { client_id: PLAID_CLIENT_ID, secret: PLAID_SECRET, ...extraBody };
+    const { clientId, secret } = await getPlaidCredentials();
+    const body = { client_id: clientId, secret: secret, ...extraBody };
     const res  = await fetch(`${PLAID_BASE_URL}${path}`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },

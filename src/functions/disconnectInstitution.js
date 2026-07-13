@@ -23,9 +23,17 @@ const { TableClient } = require('@azure/data-tables');
 const { SecretClient } = require('@azure/keyvault-secrets');
 const { DefaultAzureCredential } = require('@azure/identity');
 
-const PLAID_CLIENT_ID = process.env.PLAID_TEST_CLIENTID;
-const PLAID_SECRET    = process.env.PLAID_TEST_SECRET;
-const PLAID_BASE_URL  = 'https://sandbox.plaid.com'; // Change to production.plaid.com for live
+// Plaid Client ID/Secret are read LIVE from Key Vault, matching every
+// other function -- NOT environment variables.
+async function getPlaidCredentials() {
+    const clientIdSecret = await secretClient.getSecret('plaid-test-clientid');
+    const secretSecret = await secretClient.getSecret('plaid-test-secret');
+    return { clientId: clientIdSecret.value, secret: secretSecret.value };
+}
+
+const PLAID_BASE_URL = process.env.PLAID_ENV === 'production'
+    ? 'https://production.plaid.com'
+    : 'https://sandbox.plaid.com';
 
 const BLOB_CONNECTION_STRING = process.env.BLOB_CONNECTION_STRING;
 const TABLE_NAME    = 'BankFeedCursor'; // Must match BankFeedSync_multi.js exactly.
@@ -58,7 +66,8 @@ async function deleteCursor(institutionName, context) {
 
 async function removePlaidItem(accessToken, context) {
     try {
-        const body = { client_id: PLAID_CLIENT_ID, secret: PLAID_SECRET, access_token: accessToken };
+        const { clientId, secret } = await getPlaidCredentials();
+        const body = { client_id: clientId, secret: secret, access_token: accessToken };
         const res = await fetch(`${PLAID_BASE_URL}/item/remove`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
