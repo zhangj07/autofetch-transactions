@@ -109,6 +109,30 @@ async function plaidPost(path, extraBody, context) {
     return JSON.parse(text);
 }
 
+// ============================================================
+// THE DISASTER PATH, AND WHY NO TOKEN IS EVER LOGGED OR EMAILED
+//
+// /item/access_token/invalidate is irreversible. The instant it returns, the
+// old token is dead and the new one exists only in this function's memory. If
+// the Key Vault write then fails, that copy is lost when the function exits.
+//
+// The old code handled this by writing the full token to the logs AND emailing
+// it. That put a live credential in two of the least protected places we have:
+// App Insights (readable by anyone with resource-group Reader) and a mailbox
+// (readable in transit, at rest, and in backups) -- both far weaker than the
+// Key Vault we were using to protect it in the first place.
+//
+// We accept losing the token instead, because losing it is RECOVERABLE and
+// leaking it is not. The Key Vault write is retried hard (5 attempts with
+// backoff); if it still fails, the institution is simply reconnected through
+// Plaid Link from Business Central ("Reconnect" on the Bank Connections page),
+// which mints a fresh token. Cost: one re-authentication. No transactions are
+// lost -- the cursor is untouched, so the next sync resumes exactly where it
+// stopped.
+//
+// Logs and emails carry a FINGERPRINT (last 6 chars) only. Never the value.
+// ============================================================
+
 // Write the institutions array back to Key Vault, retrying a few times.
 // Returns true on success, false if all attempts failed.
 async function saveInstitutions(list, context) {
@@ -178,12 +202,15 @@ async function rotateAllTokens(context) {
 
         if (!saved) {
             // Disaster path: this institution's old token is dead and the new one
-            // is not saved. Surface the full token so it can be restored by hand.
-            context.log(`[${inst.name}] CRITICAL: could not save new token.`);
-            context.log(`CRITICAL_NEW_TOKEN[${inst.name}]=` + newToken);
+            // could not be written to Key Vault. The token is now unrecoverable --
+            // deliberately. Reconnect through Plaid Link to mint a fresh one.
+            context.log(`[${inst.name}] CRITICAL: could not save new token to Key Vault. Fingerprint: ${fp(newToken)}`);
+
             const err = new Error(`Rotation could not persist the new token for "${inst.name}".`);
             err.unsavedInstitution = inst.name;
-            err.unsavedToken = newToken;
+            err.unsavedFingerprint = fp(newToken);
+            // NOTE: deliberately NOT err.unsavedToken. No path exists to leak the
+            // raw value into a log or an email.
             throw err;
         }
 
@@ -215,14 +242,23 @@ async function runRotationWithNotifications(context) {
         return results;
 
     } catch (error) {
-        if (error.unsavedToken) {
-            // Worst case: one institution's old token is dead and the new one wasn't saved.
+        if (error.unsavedFingerprint) {
+            // Worst case: this institution's old token is dead and the new one was
+            // not written to Key Vault. The token is gone. Recovery is a re-auth,
+            // not a copy-paste -- which is exactly why it is safe not to keep it.
             await sendEmail(
                 'CRITICAL: Plaid token rotation could not save a new token',
-                `Institution "${error.unsavedInstitution}" was rotated but its new token could NOT be ` +
-                `written to Key Vault. Its bank feed is broken until you restore it.\n\n` +
-                `Update the "${INSTITUTIONS_SECRET}" secret so this institution's accessToken is:\n\n` +
-                `${error.unsavedToken}\n\nError: ${error.message}`,
+                `Institution "${error.unsavedInstitution}" was rotated, but its new token could NOT be ` +
+                `written to Key Vault. Its bank feed is broken until it is reconnected.\n\n` +
+                `New token fingerprint: ${error.unsavedFingerprint}\n\n` +
+                `TO RECOVER:\n` +
+                `  1. Open Business Central -> Plaid Setup -> View Bank Connections.\n` +
+                `  2. Select "${error.unsavedInstitution}" and click Reconnect.\n` +
+                `  3. Re-authenticate through Plaid Link. This mints a fresh token.\n` +
+                `  4. Click "Save Institutions" to push it to Key Vault.\n\n` +
+                `No transactions are lost -- the sync cursor was not advanced, so the next ` +
+                `bank feed run resumes exactly where it stopped.\n\n` +
+                `Error: ${error.message}`,
                 context
             );
         } else {
@@ -247,16 +283,20 @@ app.timer('TokenRotationMulti', {
 
 // ============================================================
 // DEVELOPER TEST-RUN: HTTP-triggered entry point, calls the exact same
-// shared logic as the timer above. Anonymous auth for now, per explicit
-// request for simplicity -- this means ANYONE with the URL can trigger
-// a real token rotation against your live Plaid institutions. Worth
-// locking down (authLevel: 'function', or better, requiring the same
-// BC-side auth as everything else) before this app is exposed beyond
-// your own testing.
+// shared logic as the timer above.
+//
+// authLevel is 'function': this endpoint triggers a REAL, IRREVERSIBLE token
+// rotation against live Plaid institutions. Anonymous, it let anyone with the
+// URL break every bank feed in the tenant.
+//
+// BC already sends the key for this call (PlaidDeveloperTestRunPage reads
+// 'TokenRotationRunKey' from Function App Config), so nothing on the BC side
+// needs to change -- the key simply starts being enforced. Paste this
+// function's key into Plaid Setup -> Function App Config.
 // ============================================================
 app.http('TokenRotationManualRun', {
     methods: ['POST'],
-    authLevel: 'anonymous',
+    authLevel: 'function',
     handler: async (request, context) => {
         try {
             const results = await runRotationWithNotifications(context);

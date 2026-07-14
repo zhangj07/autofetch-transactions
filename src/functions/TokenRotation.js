@@ -12,8 +12,13 @@
 // THE ONE DANGER we design around: the instant step 2 succeeds, the OLD token is dead
 // and the NEW token is the only working one. If we then failed to save it, the whole
 // pipeline would be broken with no way back except manual Link re-auth. So the save is
-// retried, and if it still fails we log the full token AND email it so it can be
-// restored by hand. Normal runs only ever log fingerprints (last 6 chars).
+// retried aggressively.
+//
+// The token is NEVER written to the logs or to an email, even on that disaster path.
+// App Insights and mailboxes are both far less protected than Key Vault -- putting a
+// live credential there defeats the point of storing it in Key Vault at all. Logs and
+// emails carry a FINGERPRINT (last 6 chars) only. If the save truly cannot be made,
+// the institution must be reconnected through Plaid Link from Business Central.
 //
 // PERMISSIONS: the Function App's managed identity needs BOTH Get and Set on Key Vault
 // secrets. BankFeedSync already gave you Get; this function adds the need for Set.
@@ -116,14 +121,12 @@ async function rotateAccessToken(context) {
         }
     }
 
-    // 3b) Disaster path: old token dead, new token not saved. Do NOT lose the new token.
+    // 3b) Disaster path: old token dead, new token not saved.
     if (!written) {
-        context.log('CRITICAL: new token could not be saved. FULL TOKEN follows so it can be restored by hand:');
-        context.log('CRITICAL_NEW_TOKEN=' + newToken);
-        // Attach the unsaved token to the error so the notifier can email it. This is the
-        // one case where the email must carry the actual token (it's the only copy left).
+        context.log(`CRITICAL: new token could not be saved to Key Vault. Fingerprint: ${fp(newToken)}`);
         const err = new Error('Rotation could not persist the new token: ' + (lastErr && lastErr.message));
-        err.unsavedToken = newToken;
+        err.unsavedFingerprint = fp(newToken);
+        // Deliberately NOT err.unsavedToken -- no path exists to leak it downstream.
         throw err;
     }
 
@@ -150,13 +153,17 @@ async function runRotationWithNotifications(context) {
         );
         return r;
     } catch (error) {
-        if (error.unsavedToken) {
-            // Worst case: old token dead, new one not saved. Email the token so it can be restored.
+        if (error.unsavedFingerprint) {
+            // Worst case: old token dead, new one not saved. The email carries a
+            // fingerprint and a recovery instruction -- never the credential itself.
             await sendEmail(
                 'CRITICAL: Plaid token rotation could not save the new token',
                 `The old token was invalidated but the new token could NOT be written to Key Vault.\n` +
-                `The bank feed is broken until you restore it. Set the secret "${SECRET_NAME}" to this value now:\n\n` +
-                `${error.unsavedToken}\n\nError: ${error.message}`,
+                `The bank feed is broken until this is resolved.\n\n` +
+                `New token fingerprint: ${error.unsavedFingerprint}\n\n` +
+                `TO RECOVER: open Business Central -> Plaid Bank Connections and use "Reconnect"\n` +
+                `to re-authenticate this institution through Plaid Link.\n\n` +
+                `Error: ${error.message}`,
                 context
             );
         } else {
