@@ -243,12 +243,33 @@ function safeInstitutionFolder(name) {
     return String(name).replace(/[^a-zA-Z0-9._-]+/g, '');
 }
 
+// Proper RFC-4180 escaping. The previous version only quoted on commas and
+// never escaped embedded quotes, so a merchant name like  Bob's "Diner", Inc.
+// produced a malformed row that broke the whole import. Plaid merchant names
+// are free text, so this is not hypothetical.
+function csvEscape(value) {
+    const s = String(value == null ? '' : value)
+        .replace(/[\r\n]+/g, ' ')   // a newline inside a field would split the row
+        .trim();
+    if (s.includes('"') || s.includes(',')) {
+        return '"' + s.replace(/"/g, '""') + '"';   // double up quotes, then wrap
+    }
+    return s;
+}
+
+// IMPORTANT: this layout is parsed by the PLAID_TRANSACTIONS data exchange
+// definition shipped in the BC extension (codeunit "Plaid Data Exch. Def
+// Mgt."). The three empty leading columns are load-bearing -- the DED maps
+// by column POSITION, so Date/Amount/Description must stay at 4/5/6.
+// Changing this function means changing that codeunit too.
 function convertToCSV(transactions) {
     const lines = ['col1,col2,col3,Date,Amount,Description'];
     for (const txn of transactions) {
+        // Plaid: positive = money OUT. BC's Statement Amount wants a
+        // withdrawal to be negative, so flip it here. The DED's Multiplier
+        // is 1 -- do not flip a second time on that side.
         const amount = (txn.amount * -1).toFixed(2);
-        let description = txn.merchant_name || txn.name || 'Unknown';
-        if (description.includes(',')) description = `"${description}"`;
+        const description = csvEscape(txn.merchant_name || txn.name || 'Unknown');
         lines.push(`,,,${txn.date},${amount},${description}`);
     }
     return lines.join('\r\n');
