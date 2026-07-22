@@ -269,6 +269,26 @@ async function runRotationWithNotifications(context) {
 }
 
 // ============================================================
+// ENABLE / DISABLE SWITCH
+// Driven by the TOKEN_ROTATION_ENABLED app setting, which the deployment sets
+// from the "Rotate Plaid access tokens automatically" toggle on the Alerts and
+// retention tab.
+//
+// Defaults to ON: if the setting is missing (e.g. an older deployment made
+// before the toggle existed), rotation keeps running exactly as before. Only an
+// explicit false-like value turns it off, and the check is case-insensitive so
+// it does not matter whether the value arrives as "false" or "False".
+//
+// This gates ONLY the scheduled timer below. The manual test-run endpoint
+// (TokenRotationManualRun) is a deliberate, key-protected developer action and
+// still rotates when called, regardless of this switch.
+// ============================================================
+function isRotationEnabled() {
+    const raw = (process.env.TOKEN_ROTATION_ENABLED ?? 'true').trim().toLowerCase();
+    return !(raw === 'false' || raw === '0' || raw === 'no' || raw === 'off');
+}
+
+// ============================================================
 // PRODUCTION TRIGGER: timer.
 // Default: 3am on the 1st of each month (Eastern, per WEBSITE_TIME_ZONE).
 // Override with TOKEN_ROTATION_SCHEDULE. 6-field CRON: {sec} {min} {hour} {day} {month} {dow}.
@@ -276,6 +296,10 @@ async function runRotationWithNotifications(context) {
 app.timer('TokenRotationMulti', {
     schedule: process.env.TOKEN_ROTATION_SCHEDULE || '0 0 3 1 * *',
     handler: async (myTimer, context) => {
+        if (!isRotationEnabled()) {
+            context.log('Automatic token rotation is turned off (TOKEN_ROTATION_ENABLED=false). Skipping this scheduled run.');
+            return;
+        }
         context.log('Scheduled multi-institution token rotation started (timer: TokenRotationMulti).');
         await runRotationWithNotifications(context);
     }
