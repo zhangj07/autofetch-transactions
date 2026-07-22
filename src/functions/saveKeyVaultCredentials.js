@@ -6,7 +6,9 @@ const keyVaultUrl = process.env.KEY_VAULT_URL;
 const credential = new DefaultAzureCredential();
 const secretClient = new SecretClient(keyVaultUrl, credential);
 
-app.http('savePlaidCredentials', {
+// Renamed from savePlaidCredentials -> saveKeyVaultCredentials.
+// Behaviour is unchanged: it writes the Plaid Client ID / Secret to Key Vault.
+app.http('saveKeyVaultCredentials', {
     methods: ['POST'],
     authLevel: 'function',
     handler: async (request, context) => {
