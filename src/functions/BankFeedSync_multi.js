@@ -581,9 +581,14 @@ async function runBCImportCheck(context) {
                 `Business Central has NOT imported the following file(s).\n` +
                 `They have been sitting in a pending/<institution>/ folder for over ${STALE_HOURS} hour(s):\n\n` +
                 `${fileList}\n\n` +
-                `LIKELY CAUSE: the BC job queue is stopped, disabled, or erroring.\n` +
-                `ACTION: In Business Central, open the Bank Feed setup page and check the ` +
-                `job queue entry and run log. Restart the job queue entry if it is on hold.`;
+                `LIKELY CAUSE: the scheduled import in Business Central is not running.\n` +
+                // The Job Queue Entry button was removed from the Bank Feed Setup
+                // page, so this deliberately points only at what the user can still
+                // reach: the Run Log, and Schedule / Update to recreate the schedule.
+                // Anything beyond that is an administrator's job.
+                `ACTION: In Business Central, open the Bank Feed Setup page and check the Run Log. ` +
+                `If no schedule is set, use Schedule / Update to create one. ` +
+                `If the files are still not imported after the next run, contact your administrator.`;
 
             context.log('BC import check: stuck files found.');
             await sendEmail('Bank feed: BC import STUCK', message, context);
