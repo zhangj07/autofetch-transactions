@@ -61,7 +61,37 @@ const INSTITUTIONS_SECRET = process.env.PLAID_INSTITUTIONS_SECRET || 'plaid-inst
 // ---- Email settings (same ones BankFeedSync uses) ----
 const ACS_CONNECTION_STRING = process.env.ACS_CONNECTION_STRING;
 const EMAIL_FROM            = process.env.ALERT_EMAIL_FROM;
-const EMAIL_TO              = process.env.ALERT_EMAIL_TO;
+
+// The alert recipient is read LIVE from Key Vault (secret "alert-email-to"),
+// so it can be changed from the Plaid Setup page in Business Central without a
+// redeployment. ALERT_EMAIL_TO (set by the deployment form) is the fallback for
+// installs that have never synced an address.
+//
+// Cached for a few minutes rather than per-call: a changed address takes effect
+// on the next run without hammering Key Vault, and without needing a restart.
+const ALERT_EMAIL_SECRET = process.env.ALERT_EMAIL_SECRET_NAME || 'alert-email-to';
+const EMAIL_TO_TTL_MS    = 5 * 60 * 1000;
+let _emailTo        = null;
+let _emailToChecked = 0;
+
+async function getEmailTo(context) {
+    if (_emailTo !== null && (Date.now() - _emailToChecked) < EMAIL_TO_TTL_MS) {
+        return _emailTo;
+    }
+    let value = '';
+    try {
+        const secret = await getSecretClient().getSecret(ALERT_EMAIL_SECRET);
+        value = (secret.value || '').trim();
+    } catch (e) {
+        context.log(`Could not read "${ALERT_EMAIL_SECRET}" from Key Vault (${e.message}). Falling back to the ALERT_EMAIL_TO app setting.`);
+    }
+    if (!value) {
+        value = (process.env.ALERT_EMAIL_TO || '').trim();
+    }
+    _emailTo        = value;
+    _emailToChecked = Date.now();
+    return _emailTo;
+}
 
 const fp    = (t) => (t ? '...' + t.slice(-6) : 'none');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -75,7 +105,8 @@ function getSecretClient() {
 }
 
 async function sendEmail(subject, message, context) {
-    if (!ACS_CONNECTION_STRING || !EMAIL_FROM || !EMAIL_TO) {
+    const emailTo = await getEmailTo(context);
+    if (!ACS_CONNECTION_STRING || !EMAIL_FROM || !emailTo) {
         context.log('Email not configured — skipping notification.');
         return;
     }
@@ -83,7 +114,7 @@ async function sendEmail(subject, message, context) {
         const client = new EmailClient(ACS_CONNECTION_STRING);
         const poller = await client.beginSend({
             senderAddress: EMAIL_FROM,
-            recipients: { to: [{ address: EMAIL_TO }] },
+            recipients: { to: [{ address: emailTo }] },
             content: { subject, plainText: message }
         });
         await poller.pollUntilDone();
